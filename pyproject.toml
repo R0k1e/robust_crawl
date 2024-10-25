@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robust_crawl"
+version = "0.1"
+description = "A library for robust crawler based on proxy pool and token bucket, support browser and requests"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "Haoyu Wang", email = "Haoyu_Wang_1103@outlook.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+dependencies = [
+    "gevent",
+    "playwright",
+    "tenacity",
+    "brotli",
+    "numpy",
+    "requests",
+    "pyyaml",
+    "bs4",
+    "fake_useragent",
+    "openai",
+    "http[socks]",
+    "requests[socks]",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]

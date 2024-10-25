@@ -1,3 +1,5 @@
+import os
+import glob
 import concurrent.futures
 import socket
 import subprocess
@@ -26,11 +28,10 @@ class ProxyManager(metaclass=SingletonMeta):
     def __init__(self, config=None):
         self.config = config
         self.is_enabled = config.get("is_enabled", False)
-        self.config_path = config.get("config_paths", [])
-        if not self.config_path:
-            logger.warning("No config path provided for starting up proxies")
+        self.proxies_dir = config.get("proxies_dir", None)
+        if not self.proxies_dir:
+            logger.warning("No proxies provided for starting up proxies")
         self.start_port = config.get("start_port", 33333)
-        self.core_type = config.get("core_type", "mihomo")
         self.location_dict = config.get("locations", {})
 
         self.port_mapping = {}
@@ -50,10 +51,7 @@ class ProxyManager(metaclass=SingletonMeta):
 
         futures = {}
         port_gen = self._get_avail_port()
-        if self.core_type == "v2ray":
-            self.port_mapping = self._create_v2ray_proxy(port_gen=port_gen)
-        elif self.core_type == "mihomo":
-            self.port_mapping = self._create_mihomo_proxy(port_gen=port_gen)
+        self.port_mapping = self._create_mihomo_proxy(port_gen=port_gen)
 
         self.port_mapping = self._check_port_mapping_availability(self.port_mapping)
 
@@ -127,7 +125,7 @@ class ProxyManager(metaclass=SingletonMeta):
         proxies = []
         port_mapping = {}
         created_server = []
-        for config in self._get_config(self.config_path):
+        for config in self._get_config(self.proxies_dir):
             for proxy in tqdm(config["proxies"], desc=f"Processing proxies"):
                 port = next(port_gen)
                 if (proxy["server"], proxy["port"]) not in created_server:
@@ -173,8 +171,8 @@ class ProxyManager(metaclass=SingletonMeta):
         time.sleep(1)
         return port_mapping
 
-    def _get_config(self, config_path_list):
-        for config_path in config_path_list:
+    def _get_config(self, proxies_dir):
+        for config_path in glob.glob(os.path.join(proxies_dir, "*.yml")):
             with FileObject(config_path, "r") as f:
                 config = yaml.safe_load(f)
                 logger.info(f"Loaded config from {config_path}")
@@ -195,13 +193,9 @@ class ProxyManager(metaclass=SingletonMeta):
                 desc="Get proxy availability check result",
             ):
                 proxy_name = futures[future]
-                try:
-                    available = future.result()
-                    if not available:
-                        port_mapping.pop(proxy_name)
-                        logger.warning(f"Proxy {proxy_name} is not available.")
-                except Exception as exc:
-                    logger.error(f"Proxy {proxy_name} generated an exception: {exc}")
+                available = future.result()
+                if not available:
+                    port_mapping.pop(proxy_name)
 
         return port_mapping
 
@@ -227,13 +221,9 @@ class ProxyManager(metaclass=SingletonMeta):
             if self._is_socks_proxy_working(port):
                 return True
         except Exception as e:
-            logger.error(f"Proxy {proxy_name} is not available: {e}")
+            logger.error(f"Proxy {proxy_name} is not available: {str(e)}")
             return False
 
-    @retry(
-        stop=stop_after_attempt(0),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-    )
     def _is_socks_proxy_working(self, port):
         proxies = {
             "http": f"socks5://127.0.0.1:{port}",
@@ -248,6 +238,8 @@ class ProxyManager(metaclass=SingletonMeta):
     def _start_process(self, cmd):
         process = subprocess.Popen(
             cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         self.processes.append(process)
         time.sleep(1)

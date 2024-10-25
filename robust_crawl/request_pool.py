@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 class RequestPool(metaclass=SingletonMeta):
     def __init__(self):
-        self.config = glb_pipeline_cfg["RequestPool"]
+        self.config = glb_pipeline_cfg
 
         self.keys = [
             os.environ.get("OPENAI_API_KEY"),
