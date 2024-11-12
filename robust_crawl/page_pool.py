@@ -44,19 +44,18 @@ class PagePool(metaclass=SingletonMeta):
             self.lifetime = lifetime
 
     def __init__(self, config=None):
-        self.num_pages = config["num_pages"]
-        self.work_pages = config["work_pages"]
-        self.page_lifetime = config["page_lifetime"]
-        self.page_cooling_time = config["page_cooling_time"]
-        self.duplicate_proxies = config["duplicate_proxies"]
-        self.ensure_none_proxies = config["ensure_none_proxies"]
-        self.have_proxy = config["have_proxy"]
-        self.download_pdf = config["download_pdf"]
-        self.download_path = config["downloads_path"]
+        self.num_pages = config.get("num_pages", 1)
+        self.work_pages = config.get("work_pages", 1)
+        self.page_lifetime = config.get("page_lifetime", 10)
+        self.page_cooling_time = config.get("page_cooling_time", 1)
+        self.duplicate_proxies = config.get("duplicate_proxies", False)
+        self.ensure_none_proxies = config("ensure_none_proxies", True)
+        self.have_proxy = config.get("have_proxy", True)
+        self.download_path = config.get("downloads_path", "./output/browser_downloads")
 
         self.token_bucket = TokenBucket()
         self.backend = PlaywrightBackend
-        self.proxy_manager = ProxyManager(cooling_time=config["cooling_time"])
+        self.proxy_manager = ProxyManager(cooling_time=self.page_cooling_time)
         if self.proxy_manager.proxies_number < self.num_pages:
             logger.warning(
                 f"Not enough proxies available. Required: {self.num_pages}, Available: {self.proxy_manager.proxies_number}"

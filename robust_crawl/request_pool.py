@@ -45,7 +45,7 @@ class RequestPool(metaclass=SingletonMeta):
             os.environ.get("OPENAI_API_KEY"),
         ]
         self.keys_iter = itertools.cycle(self.keys)
-        self.model = self.config["GPT"]["model_type"]
+        self.model = self.config.get("openai", {}).get("model_type", "gpt-3.5-turbo")
         self.clients = []
         for k in self.keys:
             client = OpenAI(
@@ -55,9 +55,8 @@ class RequestPool(metaclass=SingletonMeta):
             self.clients.append(client)
         self.clients_iter = itertools.cycle(self.clients)
 
-        self.wait_sec = self.config["wait_sec"]
-        self.semaphore = Semaphore(self.config["max_concurrent_requests"])
-        self.token_bucket = TokenBucket(self.config["TokenBucket"])
+        self.semaphore = Semaphore(self.config.get("max_concurrent_requests", 100))
+        self.token_bucket = TokenBucket(self.config.get("TokenBucket", {}))
 
         self.ua = UserAgent()
         self.ua_list = [
@@ -66,10 +65,10 @@ class RequestPool(metaclass=SingletonMeta):
             self.ua.edge,
         ]
         self.proxy_iterators = {}
-        self.proxy_creator = ProxyCreator(self.config["Proxy"])
+        self.proxy_creator = ProxyCreator(self.config.get("ProxyCreator", {}))
         self.proxy_creator.start_proxies()
 
-        self.page_pool = PagePool(self.config["PagePool"])
+        self.page_pool = PagePool(self.config.get("PagePool", {}))
 
     def llm_request(self, messages, model=None, have_system_message=False):
         if model is None:

@@ -30,7 +30,7 @@ class ProxyCreator(metaclass=SingletonMeta):
         self.is_enabled = config.get("is_enabled", False)
         self.proxies_dir = config.get("proxies_dir", None)
         if not self.proxies_dir:
-            logger.warning("No proxies provided for starting up proxies")
+            logger.warning("No proxies provided for starting up proxies, skipping...")
         self.start_port = config.get("start_port", 33333)
         self.location_dict = config.get("locations", {})
 
