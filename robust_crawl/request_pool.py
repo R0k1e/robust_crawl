@@ -30,10 +30,9 @@ from tenacity import (
 from . import ROBUST_CRAWL_CONFIG as glb_pipeline_cfg
 from .exceptions import AntiCrawlingDetectedException
 from .token_bucket import TokenBucket
-from .proxy_manager import ProxyManager
+from .proxy_creator import ProxyCreator
 from .singleton_meta import SingletonMeta
-from .context_pool import ContextPool
-
+from .page_pool import PagePool
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +66,10 @@ class RequestPool(metaclass=SingletonMeta):
             self.ua.edge,
         ]
         self.proxy_iterators = {}
-        self.proxy_manager = ProxyManager(self.config["Proxy"])
-        self.proxy_manager.start_proxies()
+        self.proxy_creator = ProxyCreator(self.config["Proxy"])
+        self.proxy_creator.start_proxies()
 
-        self.context_pool = ContextPool(self.config["ContextPool"])
+        self.page_pool = PagePool(self.config["PagePool"])
 
     def llm_request(self, messages, model=None, have_system_message=False):
         if model is None:
@@ -92,7 +91,7 @@ class RequestPool(metaclass=SingletonMeta):
             raise
 
     def browser_task(self, task_func, *args, **kwargs):
-        return self.context_pool.assign_task(task_func, *args, **kwargs)
+        return self.page_pool.assign_task(task_func, *args, **kwargs)
 
     def browser_request(self, url, method="GET", **kwargs):
         def fetch_url(page, url, method, **kwargs):
@@ -109,7 +108,7 @@ class RequestPool(metaclass=SingletonMeta):
                     raise ValueError(f"Unsupported HTTP method: {method}")
             return response
 
-        return self.context_pool.assign_task(fetch_url, url, method, **kwargs)
+        return self.page_pool.assign_task(fetch_url, url, method, **kwargs)
 
     def browser_download(self):
         return
@@ -123,7 +122,7 @@ class RequestPool(metaclass=SingletonMeta):
 
     def _get_proxy_for_url(self, base_url):
         if self.proxy_iterators is None or base_url not in self.proxy_iterators.keys():
-            proxies = self.proxy_manager.get_proxies()
+            proxies = self.proxy_creator.get_proxies()
             self.proxy_iterators[base_url] = proxies
 
         if self.proxy_iterators[base_url]:
@@ -137,12 +136,12 @@ class RequestPool(metaclass=SingletonMeta):
         stop=stop_after_attempt(5),
         retry=retry_if_exception_type(
             (
-                HTTPError,
-                ConnectionError,
-                AntiCrawlingDetectedException,
-                ProxyError,
-                RequestsSSLError,
-                Timeout,
+                    HTTPError,
+                    ConnectionError,
+                    AntiCrawlingDetectedException,
+                    ProxyError,
+                    RequestsSSLError,
+                    Timeout,
             )
         ),
         # before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -176,13 +175,10 @@ class RequestPool(metaclass=SingletonMeta):
                 url = f"https://{url}"
 
             try:
-                timeout = Timeout(60)
-                timeout.start()
                 response = session.request(
                     method,
                     url,
-                    verify=False,
-                    timeout=60,
+                    timeout=15,
                     **kwargs,
                 )
 
@@ -200,7 +196,7 @@ class RequestPool(metaclass=SingletonMeta):
                 else:
                     raise
             except (RequestsSSLError, ConnectionError, HTTPError, ProxyError) as e:
-                logger.debug(f"SSL error of url {url}:\n{e}")
+                # logger.debug(f"SSL error of url {url}:\n{e}")
                 kwargs["proxies"] = proxies = self._get_proxy_for_url(url)
                 self.token_bucket.get_tokens(base_url, proxies)
                 raise
@@ -209,10 +205,7 @@ class RequestPool(metaclass=SingletonMeta):
                 logger.error(traceback.format_exc())
                 raise
             finally:
-                timeout.close()
                 session.close()
-
-            sleep(random.uniform(1, self.wait_sec))
             return response
 
     def _detect_anti_crawling(self, response):
@@ -246,8 +239,8 @@ class RequestPool(metaclass=SingletonMeta):
 
             # Check for access denied
             if (
-                soup.find("title", text="Access Denied")
-                or "blocked" in response.text.lower()
+                    soup.find("title", text="Access Denied")
+                    or "blocked" in response.text.lower()
             ):
                 raise AntiCrawlingDetectedException("Access possibly denied")
 
@@ -285,14 +278,14 @@ class RequestPool(metaclass=SingletonMeta):
 
         if is_system:
             assert (
-                content_len % 2 == 0
+                    content_len % 2 == 0
             ), "The contents sent to LLM should end with a user message. With system messages, the length should be even. Current length: {}".format(
                 content_len
             )
             messages.append({"role": "system", "content": next(contents)})
         else:
             assert (
-                content_len % 2 == 1
+                    content_len % 2 == 1
             ), "The contents sent to LLM should end with a user message. Without system messages, the length should be odd. Current length: {}".format(
                 content_len
             )
