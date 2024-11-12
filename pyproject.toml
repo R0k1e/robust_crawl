@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "robust_crawl"
-version = "0.1"
+version = "0.1.2"
 description = "A library for robust crawler based on proxy pool and token bucket, support browser and requests"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,8 +27,9 @@ dependencies = [
     "bs4",
     "fake_useragent",
     "openai",
-    "http[socks]",
-    "requests[socks]",
+    "httpx",
+    "socksio",
+    "PySocks"
 ]
 
 [tool.setuptools.packages.find]
