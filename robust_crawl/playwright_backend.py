@@ -8,12 +8,12 @@ from gevent.fileobject import FileObject
 
 from playwright.sync_api import sync_playwright, Page
 
-class PlaywrightBackend:
-    def __init__(self, task_queue, page_index, proxies):
+class PlaywrightSyncBackend:
+    def __init__(self, task_queue, page_index, proxies, download_path):
         self.task_queue = task_queue
+        self.download_path = download_path
         self.playwright = sync_playwright().start()
         self.device = self.playwright.devices["Desktop Chrome"]
-        self.preference_path = self._create_preference(page_index)
         self.page = self.create_page(proxies)
 
     def start(self):
@@ -32,9 +32,12 @@ class PlaywrightBackend:
         shutil.rmtree(self.preference_path)
 
     def create_page(self, proxies):
-        proxy = {
-            "server": proxies["http"],
-        }
+        if server := proxies.get("http", None):
+            proxy = {
+                "server": server,
+            }
+        else:
+            proxy = None
         preference_path = self._create_preference()
         context = self.playwright.chromium.launch_persistent_context(
             channel="chrome",
@@ -49,18 +52,18 @@ class PlaywrightBackend:
             accept_downloads=True,
             bypass_csp=True,
         )
-        page = context.create_page()
+        page = context.new_page()
         return page
 
     def delete_page(self, page):
         context = page.context
         context.close()
 
-    def _create_preference(self, index):
-        preference_path = tempfile.mkdtemp()
-        file_path = os.path.join(preference_path, "Default", "Preferences")
+    def _create_preference(self):
+        self.preference_path = tempfile.mkdtemp()
+        file_path = os.path.join(self.preference_path, "Default", "Preferences")
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with FileObject(file_path, "w") as f:
             default_preferences = {"plugins": {"always_open_pdf_externally": True}}
             json.dump(default_preferences, f)
-        return preference_path
+        return self.preference_path

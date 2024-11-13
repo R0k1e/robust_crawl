@@ -33,7 +33,7 @@ class ProxyManager:
             return proxy
 
         ret = None
-        proxies = None
+        proxies = {}
         if not ensure_none_proxies:
             try:
                 ret = self.proxy_available_semaphore.acquire(timeout=timeout)
@@ -52,7 +52,7 @@ class ProxyManager:
             try:
                 proxies = _get_proxy_from_waiting()
             except ValueError:
-                proxies = None
+                proxies = {}
 
         return proxies
 

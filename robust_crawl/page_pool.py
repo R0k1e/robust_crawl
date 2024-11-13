@@ -24,7 +24,7 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from .playwright_backend import PlaywrightBackend
+from .playwright_backend import PlaywrightSyncBackend
 from .proxy_manager import ProxyManager
 from .token_bucket import TokenBucket
 from .singleton_meta import SingletonMeta
@@ -49,12 +49,12 @@ class PagePool(metaclass=SingletonMeta):
         self.page_lifetime = config.get("page_lifetime", 10)
         self.page_cooling_time = config.get("page_cooling_time", 1)
         self.duplicate_proxies = config.get("duplicate_proxies", False)
-        self.ensure_none_proxies = config("ensure_none_proxies", True)
+        self.ensure_none_proxies = config.get("ensure_none_proxies", True)
         self.have_proxy = config.get("have_proxy", True)
         self.download_path = config.get("downloads_path", "./output/browser_downloads")
 
         self.token_bucket = TokenBucket()
-        self.backend = PlaywrightBackend
+        self.backend = PlaywrightSyncBackend
         self.proxy_manager = ProxyManager(cooling_time=self.page_cooling_time)
         if self.proxy_manager.proxies_number < self.num_pages:
             logger.warning(
@@ -79,8 +79,8 @@ class PagePool(metaclass=SingletonMeta):
         for _ in tqdm(range(self.num_pages), desc="Creating pages"):
             try:
                 self._create_page_info(timeout=10)
-            except Exception:
-                logger.error("Failed to create page info")
+            except Exception as e:
+                logger.error(f"Failed to create page info: {e}")
                 pass
         logger.info(f"Successfully created {len(self.avail_page_infos)} pages")
 
@@ -144,7 +144,7 @@ class PagePool(metaclass=SingletonMeta):
             if ret2:
                 self.avail_page_empty.release()
 
-        proxies = None
+        proxies = {}
         thread = None
         ret1 = None
         ret2 = None
@@ -163,11 +163,11 @@ class PagePool(metaclass=SingletonMeta):
                     ensure_none_proxies=self.ensure_none_proxies, timeout=timeout
                 )
             else:
-                proxies = None
+                proxies = {}
 
             page_index = self.page_index.pop(0)
             page_queue = queue.Queue(maxsize=1)
-            instance = self.backend(page_queue, page_index, proxies)
+            instance = self.backend(page_queue, page_index, proxies, self.download_path)
             thread = threading.Thread(
                 target=instance.start, name=f"PageThread-{page_index}"
             )
