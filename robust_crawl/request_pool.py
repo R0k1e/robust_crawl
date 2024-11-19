@@ -68,7 +68,7 @@ class RequestPool(metaclass=SingletonMeta):
         self.proxy_creator = ProxyCreator(self.config.get("ProxyCreator", {}))
         self.proxy_creator.start_proxies()
 
-        self.page_pool = PagePool(self.config.get("PagePool", {}))
+        # self.page_pool = PagePool(self.config.get("PagePool", {}))
 
     def llm_request(self, messages, model=None, have_system_message=False):
         if model is None:
