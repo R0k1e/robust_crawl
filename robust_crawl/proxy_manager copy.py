@@ -1,5 +1,3 @@
-import os
-import glob
 import concurrent.futures
 import socket
 import subprocess
@@ -9,6 +7,7 @@ import time
 import tempfile
 import logging
 import copy
+import json
 from tqdm import tqdm
 from gevent.fileobject import FileObject
 
@@ -19,25 +18,32 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .singleton_meta import SingletonMeta
+from src.pipeline.utils.singleton_meta import SingletonMeta
+from .proxy_protocol import *
 
 logger = logging.getLogger(__name__)
 
 
-class ProxyCreator(metaclass=SingletonMeta):
+class ProxyManager(metaclass=SingletonMeta):
     def __init__(self, config=None):
         self.config = config
         self.is_enabled = config.get("is_enabled", False)
-        self.proxies_dir = config.get("proxies_dir", None)
-        if not self.proxies_dir:
-            logger.warning("No proxies provided for starting up proxies, skipping...")
+        self.config_path = config.get("config_paths", [])
+        if not self.config_path:
+            logger.warning("No config path provided for starting up proxies")
         self.start_port = config.get("start_port", 33333)
+        self.core_type = config.get("core_type", "mihomo")
         self.location_dict = config.get("locations", {})
 
         self.port_mapping = {}
         self.proxy_list = []
         self.processes = []
         self.current_proxy_index = 0
+
+        self.shadow_socks_manager = ShadowsocksProxyManager()
+        self.trojan_manager = TrojanProxyManager()
+        self.hysterian_manager = HysteriaProxyManager()
+        self.v2ray_manager = V2rayProxyManager()
 
     def __del__(self):
         for process in self.processes:
@@ -51,7 +57,10 @@ class ProxyCreator(metaclass=SingletonMeta):
 
         futures = {}
         port_gen = self._get_avail_port()
-        self.port_mapping = self._create_mihomo_proxy(port_gen=port_gen)
+        if self.core_type == "v2ray":
+            self.port_mapping = self._create_v2ray_proxy(port_gen=port_gen)
+        elif self.core_type == "mihomo":
+            self.port_mapping = self._create_mihomo_proxy(port_gen=port_gen)
 
         self.port_mapping = self._check_port_mapping_availability(self.port_mapping)
 
@@ -75,6 +84,105 @@ class ProxyCreator(metaclass=SingletonMeta):
 
     def get_proxies(self):
         return copy.deepcopy(self.proxy_list)
+
+    def _create_v2ray_proxy(self, port_gen):
+        inbounds = []
+        outbounds = []
+        rules = []
+        created_server = []
+        port_mapping = {}
+        for config in self._get_config(self.config_path):
+            for proxy in tqdm(config["proxies"], desc=f"Processing proxies"):
+                port = next(port_gen)
+                inbound, outbound, rule, cmd = None, None, None, None
+                inbound = {
+                    "port": port,
+                    "tag": proxy["name"],
+                    "listen": "0.0.0.0",
+                    "protocol": "socks",
+                    "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
+                    "settings": {
+                        "auth": "noauth",
+                        "udp": True,
+                        "allowTransparent": False,
+                    },
+                }
+                # only forward specified prot message for flow control
+                rule = {
+                    "type": "field",
+                    "inboundTag": [proxy["name"]],
+                    "outboundTag": proxy["name"],
+                }
+                if proxy["type"] == "ss":
+                    if proxy["cipher"] in [
+                        "aes-128-gcm",
+                        "aes-256-gcm",
+                        "chacha20-poly1305",
+                        "chacha20-ietf-poly1305",
+                        "plain",
+                        "none",
+                    ]:
+                        outbound = self.shadow_socks_manager.create_v2ray_config(proxy)
+                    else:
+                        logger.warning(
+                            f"Unsupported cipher method in v2ray: {proxy['cipher']}, use independent shadowsocks client"
+                        )
+                        cmd = self.shadow_socks_manager.create_proxy_command(
+                            proxy, port
+                        )
+                        self._start_process(cmd)
+                elif proxy["type"] == "trojan":
+                    outbound = self.trojan_manager.create_v2ray_config(proxy)
+                elif proxy["type"] == "hysteria2":
+                    outbound = self.hysterian_manager.create_v2ray_config(proxy)
+                elif proxy["type"] == "vmess":
+                    outbound = self.v2ray_manager.create_v2ray_config(proxy)
+                else:
+                    logger.warning(f"Unsupported proxy type: {proxy['type']}, pass")
+                    continue
+
+                if inbound and outbound and rule:
+                    if (proxy["server"], proxy["port"]) not in created_server:
+                        inbounds.append(inbound)
+                        outbounds.append(outbound)
+                        rules.append(rule)
+                        created_server.append((proxy["server"], proxy["port"]))
+                    else:
+                        logger.warning(
+                            f"Proxy {proxy['name']} has the same server and port as another proxy, pass"
+                        )
+                elif cmd:
+                    pass
+                else:
+                    logger.error(f"Failed to start proxy: {proxy}")
+                    continue
+
+                port_mapping[proxy["name"]] = port
+
+        routing = {
+            "domainStrategy": "IPOnDemand",
+            "rules": rules,
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as temp_config_file:
+            json.dump(
+                {"inbounds": inbounds, "outbounds": outbounds, "routing": routing},
+                temp_config_file,
+                indent=4,
+                ensure_ascii=False,
+            )
+            temp_config_path = temp_config_file.name
+
+            self._start_process(
+                [
+                    "v2ray",
+                    "run",
+                    "-c",
+                    temp_config_path,
+                ]
+            )
+
+        return port_mapping
 
     def _create_mihomo_proxy(self, port_gen):
         def _create_mihomo_listener(proxy, port):
@@ -108,24 +216,24 @@ class ProxyCreator(metaclass=SingletonMeta):
             "socks-port": next(port_gen),
             "mixed-port": next(port_gen),
             "mode": "rule",
-            "log-level": "warning",
+            "log-level": "error",
         }
 
-        dns = {
-            "enable": True,
-            "ipv6": False,
-            "default-nameserver": ["223.5.5.5"],
-            "enhanced-mode": "fake-ip",
-            "nameserver": [],
-            "fake-ip-filter": [],
-            "fallback": [],
-            "fallback-filter": {},
-        }
+        # dns = {
+        #     "enable": True,
+        #     "ipv6": False,
+        #     "default-nameserver": ["223.5.5.5"],
+        #     "enhanced-mode": "fake-ip",
+        #     "nameserver": [],
+        #     "fake-ip-filter": [],
+        #     "fallback": [],
+        #     "fallback-filter": {},
+        # }
         listeners = []
         proxies = []
         port_mapping = {}
         created_server = []
-        for config in self._get_config(self.proxies_dir):
+        for config in self._get_config(self.config_path):
             for proxy in tqdm(config["proxies"], desc=f"Processing proxies"):
                 port = next(port_gen)
                 if (proxy["server"], proxy["port"]) not in created_server:
@@ -134,7 +242,7 @@ class ProxyCreator(metaclass=SingletonMeta):
                     listeners.append(listener)
                     port_mapping[proxy["name"]] = port
                     created_server.append((proxy["server"], proxy["port"]))
-            dns = _update_dns_config(dns, config.get("dns", {}))
+            # dns = _update_dns_config(dns, config["dns"])
 
         proxy_groups = [
             {
@@ -147,7 +255,7 @@ class ProxyCreator(metaclass=SingletonMeta):
             }
         ]
 
-        overall_config["dns"] = dns
+        # overall_config["dns"] = dns
         overall_config["proxies"] = proxies
         overall_config["proxy-groups"] = proxy_groups
         overall_config["listeners"] = listeners
@@ -171,8 +279,8 @@ class ProxyCreator(metaclass=SingletonMeta):
         time.sleep(1)
         return port_mapping
 
-    def _get_config(self, proxies_dir):
-        for config_path in glob.glob(os.path.join(proxies_dir, "*.yml")):
+    def _get_config(self, config_path_list):
+        for config_path in config_path_list:
             with FileObject(config_path, "r") as f:
                 config = yaml.safe_load(f)
                 logger.info(f"Loaded config from {config_path}")
@@ -193,9 +301,13 @@ class ProxyCreator(metaclass=SingletonMeta):
                 desc="Get proxy availability check result",
             ):
                 proxy_name = futures[future]
-                available = future.result()
-                if not available:
-                    port_mapping.pop(proxy_name)
+                try:
+                    available = future.result()
+                    if not available:
+                        port_mapping.pop(proxy_name)
+                        logger.warning(f"Proxy {proxy_name} is not available.")
+                except Exception as exc:
+                    logger.error(f"Proxy {proxy_name} generated an exception: {exc}")
 
         return port_mapping
 
@@ -221,9 +333,13 @@ class ProxyCreator(metaclass=SingletonMeta):
             if self._is_socks_proxy_working(port):
                 return True
         except Exception as e:
-            logger.error(f"Proxy {proxy_name} is not available: {str(e)}")
+            logger.error(f"Proxy {proxy_name} is not available: {e}")
             return False
 
+    @retry(
+        stop=stop_after_attempt(0),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
     def _is_socks_proxy_working(self, port):
         proxies = {
             "http": f"socks5://127.0.0.1:{port}",
@@ -238,8 +354,8 @@ class ProxyCreator(metaclass=SingletonMeta):
     def _start_process(self, cmd):
         process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # stdout=subprocess.DEVNULL,
+            # stderr=subprocess.DEVNULL,
         )
         self.processes.append(process)
         time.sleep(1)
